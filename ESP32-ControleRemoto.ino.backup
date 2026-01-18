@@ -1,0 +1,373 @@
+#include <Arduino.h>
+#include <WiFi.h>
+#include <WebServer.h>
+#include <EEPROM.h>
+#include <LittleFS.h>
+#include <ArduinoJson.h>
+#include <IRremote.hpp>
+
+// ============================================================================
+// CONFIGURAÇÕES
+// ============================================================================
+
+const char* ssid = "Work-62";
+const char* password = "Qp@lzm10";
+
+const int IR_RECEIVER_PIN = 14;
+const int IR_EMITTER_PIN = 4;
+const int BUTTON_LEARNING = 32;
+
+// ============================================================================
+// STRUCTS E VARIÁVEIS GLOBAIS
+// ============================================================================
+
+struct IRCode {
+  char device[20];
+  char button[30];
+  uint32_t code;
+  uint8_t bits;
+};
+
+IRCode storedCodes[50];
+int codeCount = 0;
+
+WebServer server(80);
+IRrecv irrecv(IR_RECEIVER_PIN);
+IRsend irsend(IR_EMITTER_PIN);
+decode_results results;
+
+bool isLearning = false;
+uint32_t lastReceivedCode = 0;
+uint8_t lastReceivedBits = 0;
+
+// ============================================================================
+// FUNÇÕES - STORAGE / EEPROM
+// ============================================================================
+
+void saveCodestoEEPROM() {
+  EEPROM.write(0, codeCount);
+  
+  for (int i = 0; i < codeCount; i++) {
+    int offset = 1 + (i * sizeof(IRCode));
+    EEPROM.put(offset, storedCodes[i]);
+  }
+  
+  EEPROM.commit();
+  Serial.println("✓ " + String(codeCount) + " códigos salvos na EEPROM");
+}
+
+void loadCodesFromEEPROM() {
+  codeCount = EEPROM.read(0);
+  
+  if (codeCount > 50 || codeCount < 0) {
+    Serial.println("⚠ EEPROM corrompida ou vazia, iniciando sem códigos");
+    codeCount = 0;
+    return;
+  }
+  
+  for (int i = 0; i < codeCount; i++) {
+    int offset = 1 + (i * sizeof(IRCode));
+    EEPROM.get(offset, storedCodes[i]);
+  }
+  
+  Serial.println("✓ " + String(codeCount) + " códigos carregados da EEPROM");
+}
+
+// ============================================================================
+// FUNÇÕES - IR MANAGER
+// ============================================================================
+
+void handleReceivedIR() {
+  lastReceivedCode = results.value;
+  lastReceivedBits = results.bits;
+  
+  if (isLearning) {
+    Serial.println("📥 Código recebido (Modo Aprendizado): 0x" + String(results.value, HEX) +
+                   " (" + String(results.bits) + " bits)");
+  } else {
+    Serial.println("📥 Código recebido: 0x" + String(results.value, HEX) +
+                   " (" + String(results.bits) + " bits)");
+  }
+}
+
+uint32_t findCode(const char* device, const char* button) {
+  for (int i = 0; i < codeCount; i++) {
+    if (strcmp(storedCodes[i].device, device) == 0 &&
+        strcmp(storedCodes[i].button, button) == 0) {
+      return storedCodes[i].code;
+    }
+  }
+  return 0;
+}
+
+void toggleLearningMode() {
+  isLearning = !isLearning;
+  
+  if (isLearning) {
+    Serial.println("✓ Modo aprendizado ATIVADO (via botão físico)");
+  } else {
+    Serial.println("✗ Modo aprendizado DESATIVADO");
+  }
+}
+
+// ============================================================================
+// FUNÇÕES - CONFIG / WIFI
+// ============================================================================
+
+bool initFS() {
+  if (!LittleFS.begin(true)) {
+    Serial.println("✗ Falha ao iniciar LittleFS");
+    return false;
+  }
+  
+  Serial.println("✓ LittleFS iniciado");
+  return true;
+}
+
+void setupWiFi() {
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(ssid, password);
+  
+  Serial.println("✓ Conectando na rede WiFi...");
+  Serial.println("  SSID: " + String(ssid));
+  
+  int attempts = 0;
+  const int maxAttempts = 20;
+  
+  while (WiFi.status() != WL_CONNECTED && attempts < maxAttempts) {
+    delay(500);
+    Serial.print(".");
+    attempts++;
+  }
+  
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.println("\n✓ Conectado com sucesso!");
+    Serial.println("  IP: " + WiFi.localIP().toString());
+    Serial.println("  Acesse: http://" + WiFi.localIP().toString() + " no navegador\n");
+  } else {
+    Serial.println("\n✗ Falha ao conectar WiFi!");
+    Serial.println("  Verifique SSID e Senha\n");
+  }
+}
+
+// ============================================================================
+// HANDLERS HTTP
+// ============================================================================
+
+void handleRoot() {
+  String html = "<!DOCTYPE html><html><head><meta charset='UTF-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>Controle Remoto ESP32</title><style>body{font-family:Arial,sans-serif;max-width:500px;margin:20px auto;background:#f0f0f0;}div.container{background:white;border-radius:10px;padding:20px;box-shadow:0 2px 10px rgba(0,0,0,0.1);}h1{color:#333;text-align:center;}.device-btn{width:100%;padding:15px;margin:10px 0;font-size:16px;border:none;border-radius:5px;cursor:pointer;background:#007bff;color:white;transition:0.3s;}.device-btn:hover{background:#0056b3;}.api-status{text-align:center;margin-top:20px;padding:10px;background:#f9f9f9;border-radius:5px;}</style></head><body><div class='container'><h1>Controle Remoto</h1><button class='device-btn' onclick='sendCommand(\"tv\",\"power\")'>TV Power</button><button class='device-btn' onclick='sendCommand(\"ac\",\"power\")'>AC Power</button><button class='device-btn' onclick='sendCommand(\"som\",\"power\")'>Som Power</button><div class='api-status'><p>Status: <span id='api-status'>Pronto</span></p></div></div><script>function sendCommand(d,b){fetch('/api/command',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({device:d,button:b})}).then(r=>r.json()).then(x=>{document.getElementById('api-status').innerHTML=x.status;}).catch(e=>{document.getElementById('api-status').innerHTML='Erro';});}</script></body></html>";
+  
+  server.send(200, "text/html", html);
+}
+
+void handleCommand() {
+  if (!server.hasArg("plain")) {
+    server.send(400, "application/json", "{\"status\":\"error\"}");
+    return;
+  }
+
+  StaticJsonDocument<300> doc;
+  DeserializationError error = deserializeJson(doc, server.arg("plain"));
+  
+  if (error) {
+    server.send(400, "application/json", "{\"status\":\"error\"}");
+    return;
+  }
+
+  String device = doc["device"].as<String>();
+  String button = doc["button"].as<String>();
+  uint32_t code = findCode(device.c_str(), button.c_str());
+
+  if (code != 0) {
+    Serial.println("Enviando: " + device + " - " + button + " - 0x" + String(code, HEX));
+    irsend.sendNEC(code, 32);
+    server.send(200, "application/json", "{\"status\":\"success\"}");
+  } else {
+    server.send(404, "application/json", "{\"status\":\"not_found\"}");
+  }
+}
+
+void handleStatus() {
+  DynamicJsonDocument doc(300);
+  doc["status"] = "ok";
+  doc["learning_mode"] = isLearning;
+  doc["codes_stored"] = codeCount;
+  
+  String response;
+  serializeJson(doc, response);
+  server.send(200, "application/json", response);
+}
+
+void handleLearnStart() {
+  isLearning = true;
+  lastReceivedCode = 0;
+  Serial.println("✓ Modo aprendizado ATIVADO");
+  server.send(200, "application/json", "{\"status\":\"learning_started\"}");
+}
+
+void handleLearnStop() {
+  isLearning = false;
+  Serial.println("✗ Modo aprendizado DESATIVADO");
+  server.send(200, "application/json", "{\"status\":\"learning_stopped\"}");
+}
+
+void handleLearnSave() {
+  if (!server.hasArg("plain")) {
+    server.send(400, "application/json", "{\"status\":\"error\"}");
+    return;
+  }
+
+  StaticJsonDocument<300> doc;
+  DeserializationError error = deserializeJson(doc, server.arg("plain"));
+  
+  if (error) {
+    server.send(400, "application/json", "{\"status\":\"error\"}");
+    return;
+  }
+
+  String device = doc["device"].as<String>();
+  String button = doc["button"].as<String>();
+
+  if (codeCount >= 50) {
+    server.send(400, "application/json", "{\"status\":\"limit\"}");
+    return;
+  }
+
+  if (lastReceivedCode == 0) {
+    server.send(400, "application/json", "{\"status\":\"no_code\"}");
+    return;
+  }
+
+  storedCodes[codeCount].code = lastReceivedCode;
+  storedCodes[codeCount].bits = lastReceivedBits;
+  strncpy(storedCodes[codeCount].device, device.c_str(), 19);
+  storedCodes[codeCount].device[19] = '\0';
+  strncpy(storedCodes[codeCount].button, button.c_str(), 29);
+  storedCodes[codeCount].button[29] = '\0';
+  
+  codeCount++;
+  saveCodestoEEPROM();
+
+  Serial.println("✓ Código salvo: " + device + " - " + button);
+  server.send(200, "application/json", "{\"status\":\"success\"}");
+}
+
+void handleListCodes() {
+  StaticJsonDocument<4096> doc;
+  JsonArray array = doc.createNestedArray("codes");
+
+  for (int i = 0; i < codeCount; i++) {
+    JsonObject obj = array.createNestedObject();
+    obj["device"] = storedCodes[i].device;
+    obj["button"] = storedCodes[i].button;
+    obj["code"] = String(storedCodes[i].code, HEX);
+  }
+
+  String response;
+  serializeJson(doc, response);
+  server.send(200, "application/json", response);
+}
+
+void handleDeleteCode() {
+  if (!server.hasArg("plain")) {
+    server.send(400, "application/json", "{\"status\":\"error\"}");
+    return;
+  }
+
+  StaticJsonDocument<200> doc;
+  DeserializationError error = deserializeJson(doc, server.arg("plain"));
+  
+  if (error) {
+    server.send(400, "application/json", "{\"status\":\"error\"}");
+    return;
+  }
+
+  int index = doc["index"].as<int>();
+
+  if (index >= 0 && index < codeCount) {
+    for (int i = index; i < codeCount - 1; i++) {
+      storedCodes[i] = storedCodes[i + 1];
+    }
+    codeCount--;
+    saveCodestoEEPROM();
+    Serial.println("✓ Código removido");
+    server.send(200, "application/json", "{\"status\":\"success\"}");
+  } else {
+    server.send(400, "application/json", "{\"status\":\"error\"}");
+  }
+}
+
+void setupRoutes() {
+  server.on("/", HTTP_GET, handleRoot);
+  server.on("/api/command", HTTP_POST, handleCommand);
+  server.on("/api/status", HTTP_GET, handleStatus);
+  server.on("/api/learn/start", HTTP_POST, handleLearnStart);
+  server.on("/api/learn/stop", HTTP_POST, handleLearnStop);
+  server.on("/api/learn/save", HTTP_POST, handleLearnSave);
+  server.on("/api/codes", HTTP_GET, handleListCodes);
+  server.on("/api/code/delete", HTTP_POST, handleDeleteCode);
+}
+
+// ============================================================================
+// SETUP E LOOP
+// ============================================================================
+
+void setup() {
+  Serial.begin(115200);
+  delay(1000);
+
+  Serial.println("\n\n");
+  Serial.println("╔════════════════════════════════════════╗");
+  Serial.println("║   CONTROLE REMOTO UNIVERSAL - ESP32    ║");
+  Serial.println("║         Iniciando Sistema...           ║");
+  Serial.println("╚════════════════════════════════════════╝\n");
+
+  pinMode(IR_EMITTER_PIN, OUTPUT);
+  pinMode(BUTTON_LEARNING, INPUT_PULLUP);
+
+  irrecv.enableIRIn();
+  irsend.begin();
+
+  EEPROM.begin(3000);  // Aumentado para suportar 50 códigos (~56 bytes cada)
+
+  initFS();
+  loadCodesFromEEPROM();
+
+  setupWiFi();
+  setupRoutes();
+
+  server.begin();
+  Serial.println("✓ Servidor Web iniciado\n");
+
+  Serial.println("✓ Receptor IR ativo no GPIO 14");
+  Serial.println("✓ Emissor IR ativo no GPIO 4\n");
+}
+
+void loop() {
+  server.handleClient();
+
+  if (irrecv.decode(&results)) {
+    handleReceivedIR();
+    irrecv.resume();
+  }
+
+  static unsigned long lastButtonCheck = 0;
+  const unsigned long debounceDelay = 50;
+  
+  if (digitalRead(BUTTON_LEARNING) == LOW) {
+    unsigned long now = millis();
+    if (now - lastButtonCheck > debounceDelay) {
+      lastButtonCheck = now;
+      if (digitalRead(BUTTON_LEARNING) == LOW) {
+        toggleLearningMode();
+        while (digitalRead(BUTTON_LEARNING) == LOW) {
+          yield();
+          delay(10);
+        }
+        delay(500);
+      }
+    }
+  }
+  
+  yield();
+}
