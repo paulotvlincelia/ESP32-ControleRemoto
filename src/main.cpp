@@ -2,7 +2,6 @@
 #include <WiFi.h>
 #include <WebServer.h>
 #include <Preferences.h>
-#include <LittleFS.h>
 #include <ArduinoJson.h>
 
 // ============================================================================
@@ -407,16 +406,6 @@ void toggleLearningMode() {
 // ============================================================================
 // FUNÇÕES - CONFIG / WIFI
 // ============================================================================
-
-bool initFS() {
-  if (!LittleFS.begin(true)) {
-    Serial.println("✗ Falha ao iniciar LittleFS");
-    return false;
-  }
-  
-  Serial.println("✓ LittleFS iniciado");
-  return true;
-}
 
 // Salvar credenciais WiFi no Preferences
 void saveWiFiCredentials(const char* ssid, const char* password) {
@@ -874,12 +863,6 @@ void handleRoot() {
       <button class='btn-control btn-refresh' onclick='loadCodes()'>
         🔄 Atualizar
       </button>
-      <button class='btn-control' onclick='testLed()' style='background: linear-gradient(135deg, #c0392b 0%, #e74c3c 100%);'>
-        🔴 Teste GPIO 2 (HIGH)
-      </button>
-      <button class='btn-control' onclick='testLedInv()' style='background: linear-gradient(135deg, #6c3483 0%, #9b59b6 100%);'>
-        🟣 Teste GPIO 2 (LOW)
-      </button>
     </div>
     
     <div id='btn-grid' class='btn-grid'>
@@ -944,32 +927,6 @@ void handleRoot() {
       }, 3000);
     }
     
-    function testLed() {
-      updateStatus('🔴 Teste GPIO 2 (HIGH): 2 s...', true);
-      fetch('/api/test-led', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
-        .then(r => r.json())
-        .then(data => {
-          if (data.status === 'success') {
-            updateStatus('✓ GPIO 2 (HIGH) 2 s concluído. LED entre GPIO e GND deve ter acendido.', true);
-          } else {
-            updateStatus('✗ Erro: ' + (data.message || 'erro'), false);
-          }
-        })
-        .catch(e => { updateStatus('✗ Erro de conexão no teste LED', false); });
-    }
-    function testLedInv() {
-      updateStatus('🟣 Teste GPIO 2 (LOW): 2 s...', true);
-      fetch('/api/test-led-inv', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
-        .then(r => r.json())
-        .then(data => {
-          if (data.status === 'success') {
-            updateStatus('✓ GPIO 2 (LOW) 2 s concluído. LED entre 3.3V e GPIO deve ter acendido.', true);
-          } else {
-            updateStatus('✗ Erro: ' + (data.message || 'erro'), false);
-          }
-        })
-        .catch(e => { updateStatus('✗ Erro de conexão no teste LED', false); });
-    }
     function sendCode(id) {
       // Encontrar o botão que foi clicado para feedback visual
       const btn = document.getElementById('code-btn-' + id);
@@ -1111,15 +1068,12 @@ void handleRoot() {
         return;
       }
       
-      console.log('Enviando para salvar:', { device: device, button: button });
-      
       fetch('/api/learn/save', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ device: device, button: button })
       })
       .then(r => {
-        console.log('Status HTTP:', r.status);
         if (!r.ok) {
           return r.json().then(err => {
             throw new Error(err.message || 'Erro HTTP ' + r.status);
@@ -1128,24 +1082,18 @@ void handleRoot() {
         return r.json();
       })
       .then(data => {
-        console.log('Resposta recebida:', data);
         if (data.status === 'success') {
           updateStatus('✓ Código salvo: ' + device + ' - ' + button, true);
           closeModal();
-          // Recarregar lista de códigos para mostrar o novo
           loadCodes();
-          // Continuar modo aprendizado para próximo código
           if (learnMode) {
             updateStatus('Modo aprendizado ATIVO - Aponte o controle e pressione outro botão', true);
           }
         } else {
-          const errorMsg = data.message || 'Erro desconhecido';
-          console.error('Erro ao salvar:', errorMsg);
-          alert('Erro ao salvar código: ' + errorMsg);
+          alert('Erro ao salvar código: ' + (data.message || 'Erro desconhecido'));
         }
       })
       .catch(e => {
-        console.error('Erro na requisição:', e);
         alert('Erro ao salvar: ' + e.message);
       });
     }
@@ -1166,9 +1114,9 @@ void handleRoot() {
       }
     }
     
-    // Salvar ao pressionar Enter no input (usar delegação de eventos)
+    // Salvar ao pressionar Enter nos inputs do modal de captura
     document.addEventListener('keypress', function(e) {
-      if (e.target && e.target.id === 'codeName' && e.key === 'Enter') {
+      if ((e.target.id === 'deviceName' || e.target.id === 'buttonName') && e.key === 'Enter') {
         saveCapturedCode();
       }
     });
@@ -1336,43 +1284,6 @@ void handleRoot() {
   server.send(200, "text/html", html);
 }
 
-void handleCommand() {
-  if (!server.hasArg("plain")) {
-    sendJsonError(400, "no_data");
-    return;
-  }
-
-  StaticJsonDocument<300> doc;
-  DeserializationError error = deserializeJson(doc, server.arg("plain"));
-  
-  if (error) {
-    sendJsonError(400, "json_parse_error");
-    return;
-  }
-
-  String device = doc["device"].as<String>();
-  String button = doc["button"].as<String>();
-  
-  // Validação de segurança: verificar se device e button não estão vazios
-  if (device.length() == 0 || button.length() == 0) {
-    sendJsonError(400, "invalid_parameters");
-    return;
-  }
-  
-  int codeIndex = findCodeIndex(device.c_str(), button.c_str());
-
-  // Validação de segurança: verificar limites antes de acessar array
-  if (codeIndex >= 0 && codeIndex < MAX_CODES && codeCount <= MAX_CODES) {
-    if (sendIRCode(storedCodes[codeIndex])) {
-      sendJsonSuccess();
-    } else {
-      sendJsonError(500, "failed_to_send");
-    }
-  } else {
-    sendJsonError(404, "code_not_found");
-  }
-}
-
 void handleStatus() {
   DynamicJsonDocument doc(500);
   doc["status"] = "ok";
@@ -1399,58 +1310,6 @@ void handleStatus() {
   String response;
   serializeJson(doc, response);
   server.send(200, "application/json", response);
-}
-
-void handleTestLed() {
-  // Teste: emissor (IR_EMITTER_PIN) em HIGH por 2 s.
-  Serial.println(">>> Teste GPIO " + String(IR_EMITTER_PIN) + " (HIGH): handler chamado");
-  pinMode(IR_EMITTER_PIN, OUTPUT);
-  delay(10);
-  digitalWrite(IR_EMITTER_PIN, HIGH);
-  delay(2000);
-  digitalWrite(IR_EMITTER_PIN, LOW);
-  Serial.println(">>> Teste GPIO " + String(IR_EMITTER_PIN) + " (HIGH): 2 s concluídos");
-  sendJsonSuccess("led_test_ok");
-}
-
-void handleTestLedInverted() {
-  // Teste: emissor em LOW por 2 s (circuito ativo em LOW: LED entre 3.3V e GPIO).
-  Serial.println(">>> Teste GPIO " + String(IR_EMITTER_PIN) + " (LOW): handler chamado");
-  pinMode(IR_EMITTER_PIN, OUTPUT);
-  delay(10);
-  digitalWrite(IR_EMITTER_PIN, LOW);
-  delay(2000);
-  digitalWrite(IR_EMITTER_PIN, HIGH);
-  Serial.println(">>> Teste GPIO " + String(IR_EMITTER_PIN) + " (LOW): 2 s concluídos");
-  sendJsonSuccess("led_test_inv_ok");
-}
-
-// Teste do LED do emissor ao boot (usa IR_EMITTER_PIN; pinMode já feito no setup).
-// Durante os delays chama server.handleClient()/yield para não bloquear o acesso à interface web.
-// Comentar a chamada no final do setup() para pular o teste e ganhar ~7 s no arranque.
-void testLED_Emissor() {
-  auto delayMs = [](unsigned int ms) {
-    for (unsigned int t = 0; t < ms; t += 50) {
-      delay(50);
-      server.handleClient();
-      yield();
-    }
-  };
-  Serial.println("\n🧪 Teste LED emissor GPIO " + String(IR_EMITTER_PIN) + " (boot)");
-  Serial.println("  1️⃣ LED LIGADO por 2 segundos...");
-  digitalWrite(IR_EMITTER_PIN, HIGH);
-  delayMs(2000);
-  Serial.println("  2️⃣ LED DESLIGADO por 2 segundos...");
-  digitalWrite(IR_EMITTER_PIN, LOW);
-  delayMs(2000);
-  Serial.println("  3️⃣ LED PISCANDO 5 vezes...");
-  for (int i = 0; i < 5; i++) {
-    digitalWrite(IR_EMITTER_PIN, HIGH);
-    delayMs(200);
-    digitalWrite(IR_EMITTER_PIN, LOW);
-    delayMs(200);
-  }
-  Serial.println("✓ Teste LED emissor concluído!\n");
 }
 
 void handleLearnStart() {
@@ -2182,7 +2041,6 @@ void setupRoutes() {
   server.on("/config", HTTP_GET, handleWiFiConfig);
   server.on("/api/wifi/config", HTTP_POST, handleWiFiConfigSave);
   server.on("/api/wifi/reconnect", HTTP_POST, handleWiFiReconnect);
-  server.on("/api/command", HTTP_POST, handleCommand);
   server.on("/api/status", HTTP_GET, handleStatus);
   server.on("/api/learn/start", HTTP_POST, handleLearnStart);
   server.on("/api/learn/stop", HTTP_POST, handleLearnStop);
@@ -2192,8 +2050,6 @@ void setupRoutes() {
   server.on("/api/code/send", HTTP_POST, handleCodeSend);
   server.on("/api/code/edit", HTTP_POST, handleCodeEdit);
   server.on("/api/code/delete", HTTP_POST, handleCodeDelete);
-  server.on("/api/test-led", HTTP_POST, handleTestLed);
-  server.on("/api/test-led-inv", HTTP_POST, handleTestLedInverted);
 }
 
 // ============================================================================
@@ -2212,8 +2068,7 @@ void setup() {
 
   pinMode(BUTTON_LEARNING, INPUT_PULLUP);
 
-  // Emissor (IR_EMITTER_PIN = GPIO 2): OUTPUT e LOW no boot para estado conhecido e para testLED_Emissor().
-  // IrSender.begin() não toca no pino; o LEDC é anexado em timerConfigForSend() no 1º send().
+  // Emissor: OUTPUT e LOW no boot. IrSender.begin() não toca no pino; LEDC é anexado no 1º send().
   pinMode(IR_EMITTER_PIN, OUTPUT);
   digitalWrite(IR_EMITTER_PIN, LOW);
 
@@ -2224,7 +2079,6 @@ void setup() {
   IrReceiver.begin(IR_RECEIVER_PIN, false);
   
   // Preferences é inicializado dentro de loadCodesFromPreferences()
-  initFS();
   loadCodesFromPreferences();
 
   setupWiFi();
@@ -2270,9 +2124,6 @@ void setup() {
 
   Serial.println("✓ Receptor IR ativo no GPIO 14");
   Serial.println("✓ Emissor IR ativo no GPIO " + String(IR_EMITTER_PIN) + " (IrSender.begin)");
-
-  testLED_Emissor();
-
   Serial.println();
 }
 
