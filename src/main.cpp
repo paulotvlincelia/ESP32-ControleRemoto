@@ -22,9 +22,8 @@ const uint8_t AP_IP_OCTET_3 = 4;   // Faixa padrão para APs
 const uint8_t AP_IP_OCTET_4 = 1;   // IP do ESP32 no modo AP
 
 const int IR_RECEIVER_PIN = 14;
-const int IR_EMITTER_PIN = 4;
+const int IR_EMITTER_PIN = 2;   // Pino do emissor IR. Alterar aqui ao trocar de GPIO.
 const int BUTTON_LEARNING = 32;
-const int TEST_GPIO2_PIN = 2;  // LED onboard em muitas placas ESP32; uso só para teste
 
 // Constantes de validação
 const int MAX_CODES = 50;
@@ -876,13 +875,10 @@ void handleRoot() {
         🔄 Atualizar
       </button>
       <button class='btn-control' onclick='testLed()' style='background: linear-gradient(135deg, #c0392b 0%, #e74c3c 100%);'>
-        🔴 Teste LED (HIGH)
+        🔴 Teste GPIO 2 (HIGH)
       </button>
       <button class='btn-control' onclick='testLedInv()' style='background: linear-gradient(135deg, #6c3483 0%, #9b59b6 100%);'>
-        🟣 Teste LED (LOW)
-      </button>
-      <button class='btn-control' onclick='testLedGpio2()' style='background: linear-gradient(135deg, #16a085 0%, #1abc9c 100%);'>
-        🟢 Teste GPIO 2
+        🟣 Teste GPIO 2 (LOW)
       </button>
     </div>
     
@@ -949,12 +945,12 @@ void handleRoot() {
     }
     
     function testLed() {
-      updateStatus('🔴 Teste LED (HIGH): 5 piscadas em GPIO 4...', true);
+      updateStatus('🔴 Teste GPIO 2 (HIGH): 2 s...', true);
       fetch('/api/test-led', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
         .then(r => r.json())
         .then(data => {
           if (data.status === 'success') {
-            updateStatus('✓ Teste LED (HIGH) concluído. LED entre GPIO e GND deve ter piscado.', true);
+            updateStatus('✓ GPIO 2 (HIGH) 2 s concluído. LED entre GPIO e GND deve ter acendido.', true);
           } else {
             updateStatus('✗ Erro: ' + (data.message || 'erro'), false);
           }
@@ -962,32 +958,18 @@ void handleRoot() {
         .catch(e => { updateStatus('✗ Erro de conexão no teste LED', false); });
     }
     function testLedInv() {
-      updateStatus('🟣 Teste LED (LOW): 5 piscadas em GPIO 4...', true);
+      updateStatus('🟣 Teste GPIO 2 (LOW): 2 s...', true);
       fetch('/api/test-led-inv', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
         .then(r => r.json())
         .then(data => {
           if (data.status === 'success') {
-            updateStatus('✓ Teste LED (LOW) concluído. LED entre 3.3V e GPIO deve ter piscado.', true);
+            updateStatus('✓ GPIO 2 (LOW) 2 s concluído. LED entre 3.3V e GPIO deve ter acendido.', true);
           } else {
             updateStatus('✗ Erro: ' + (data.message || 'erro'), false);
           }
         })
         .catch(e => { updateStatus('✗ Erro de conexão no teste LED', false); });
     }
-    function testLedGpio2() {
-      updateStatus('🟢 Teste GPIO 2 (onboard): 5 piscadas...', true);
-      fetch('/api/test-led-gpio2', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
-        .then(r => r.json())
-        .then(data => {
-          if (data.status === 'success') {
-            updateStatus('✓ GPIO 2: 5 piscadas. Se o LED onboard piscou, o firmware está ok.', true);
-          } else {
-            updateStatus('✗ Erro: ' + (data.message || 'erro'), false);
-          }
-        })
-        .catch(e => { updateStatus('✗ Erro de conexão', false); });
-    }
-    
     function sendCode(id) {
       // Encontrar o botão que foi clicado para feedback visual
       const btn = document.getElementById('code-btn-' + id);
@@ -1420,53 +1402,55 @@ void handleStatus() {
 }
 
 void handleTestLed() {
-  // Teste elétrico: GPIO 4 em HIGH (LED entre GPIO e GND deve acender).
-  // Libera o pino do LEDC se estiver em uso; 5 piscadas para facilitar ver.
-  Serial.println(">>> Teste LED: handler chamado, GPIO " + String(IR_EMITTER_PIN));
-#if defined(ESP32)
-  ledcDetachPin(IR_EMITTER_PIN);  // libera do LEDC (IR) para usar como GPIO
-#endif
+  // Teste: emissor (IR_EMITTER_PIN) em HIGH por 2 s.
+  Serial.println(">>> Teste GPIO " + String(IR_EMITTER_PIN) + " (HIGH): handler chamado");
   pinMode(IR_EMITTER_PIN, OUTPUT);
-  for (int i = 0; i < 5; i++) {
-    digitalWrite(IR_EMITTER_PIN, HIGH);
-    delay(300);
-    digitalWrite(IR_EMITTER_PIN, LOW);
-    delay(200);
-  }
-  Serial.println(">>> Teste LED: 5 piscadas HIGH concluídas");
+  delay(10);
+  digitalWrite(IR_EMITTER_PIN, HIGH);
+  delay(2000);
+  digitalWrite(IR_EMITTER_PIN, LOW);
+  Serial.println(">>> Teste GPIO " + String(IR_EMITTER_PIN) + " (HIGH): 2 s concluídos");
   sendJsonSuccess("led_test_ok");
 }
 
 void handleTestLedInverted() {
-  // Teste elétrico: GPIO 4 em LOW = LED aceso (LED entre 3.3V e GPIO, ou transistor PNP).
-  Serial.println(">>> Teste LED invertido: handler chamado, GPIO " + String(IR_EMITTER_PIN));
-#if defined(ESP32)
-  ledcDetachPin(IR_EMITTER_PIN);
-#endif
+  // Teste: emissor em LOW por 2 s (circuito ativo em LOW: LED entre 3.3V e GPIO).
+  Serial.println(">>> Teste GPIO " + String(IR_EMITTER_PIN) + " (LOW): handler chamado");
   pinMode(IR_EMITTER_PIN, OUTPUT);
-  for (int i = 0; i < 5; i++) {
-    digitalWrite(IR_EMITTER_PIN, LOW);   // "on" para circuito ativo em LOW
-    delay(300);
-    digitalWrite(IR_EMITTER_PIN, HIGH);  // "off"
-    delay(200);
-  }
-  Serial.println(">>> Teste LED invertido: 5 piscadas LOW concluídas");
+  delay(10);
+  digitalWrite(IR_EMITTER_PIN, LOW);
+  delay(2000);
+  digitalWrite(IR_EMITTER_PIN, HIGH);
+  Serial.println(">>> Teste GPIO " + String(IR_EMITTER_PIN) + " (LOW): 2 s concluídos");
   sendJsonSuccess("led_test_inv_ok");
 }
 
-void handleTestLedGpio2() {
-  // Teste em GPIO 2 (LED onboard em muitas placas). Se piscar, o firmware aciona pinos;
-  // se GPIO 4 não pisca, o defeito é no circuito do GPIO 4.
-  Serial.println(">>> Teste GPIO 2: handler chamado");
-  pinMode(TEST_GPIO2_PIN, OUTPUT);
+// Teste do LED do emissor ao boot (usa IR_EMITTER_PIN; pinMode já feito no setup).
+// Durante os delays chama server.handleClient()/yield para não bloquear o acesso à interface web.
+// Comentar a chamada no final do setup() para pular o teste e ganhar ~7 s no arranque.
+void testLED_Emissor() {
+  auto delayMs = [](unsigned int ms) {
+    for (unsigned int t = 0; t < ms; t += 50) {
+      delay(50);
+      server.handleClient();
+      yield();
+    }
+  };
+  Serial.println("\n🧪 Teste LED emissor GPIO " + String(IR_EMITTER_PIN) + " (boot)");
+  Serial.println("  1️⃣ LED LIGADO por 2 segundos...");
+  digitalWrite(IR_EMITTER_PIN, HIGH);
+  delayMs(2000);
+  Serial.println("  2️⃣ LED DESLIGADO por 2 segundos...");
+  digitalWrite(IR_EMITTER_PIN, LOW);
+  delayMs(2000);
+  Serial.println("  3️⃣ LED PISCANDO 5 vezes...");
   for (int i = 0; i < 5; i++) {
-    digitalWrite(TEST_GPIO2_PIN, HIGH);
-    delay(300);
-    digitalWrite(TEST_GPIO2_PIN, LOW);
-    delay(200);
+    digitalWrite(IR_EMITTER_PIN, HIGH);
+    delayMs(200);
+    digitalWrite(IR_EMITTER_PIN, LOW);
+    delayMs(200);
   }
-  Serial.println(">>> Teste GPIO 2: 5 piscadas concluídas");
-  sendJsonSuccess("led_gpio2_ok");
+  Serial.println("✓ Teste LED emissor concluído!\n");
 }
 
 void handleLearnStart() {
@@ -2210,7 +2194,6 @@ void setupRoutes() {
   server.on("/api/code/delete", HTTP_POST, handleCodeDelete);
   server.on("/api/test-led", HTTP_POST, handleTestLed);
   server.on("/api/test-led-inv", HTTP_POST, handleTestLedInverted);
-  server.on("/api/test-led-gpio2", HTTP_POST, handleTestLedGpio2);
 }
 
 // ============================================================================
@@ -2227,14 +2210,14 @@ void setup() {
   Serial.println("║         Iniciando Sistema...           ║");
   Serial.println("╚════════════════════════════════════════╝\n");
 
-  // GPIO 4: não usar pinMode(OUTPUT) aqui. No ESP32, o LEDC (ledcAttach) é
-  // configurado em timerConfigForSend() no primeiro envio; pinMode antes
-  // pode conflitar com ledc (ver IRSend.hpp / IRTimer.hpp).
   pinMode(BUTTON_LEARNING, INPUT_PULLUP);
 
-  // IrSender: com IR_SEND_PIN definido, begin() sem args é o correto.
-  // begin(pin) configura o pino de FEEDBACK do LED, não o de envio; o envio
-  // usa IR_SEND_PIN (4). A inicialização real do LEDC ocorre no 1º send*().
+  // Emissor (IR_EMITTER_PIN = GPIO 2): OUTPUT e LOW no boot para estado conhecido e para testLED_Emissor().
+  // IrSender.begin() não toca no pino; o LEDC é anexado em timerConfigForSend() no 1º send().
+  pinMode(IR_EMITTER_PIN, OUTPUT);
+  digitalWrite(IR_EMITTER_PIN, LOW);
+
+  // IrSender: com IR_SEND_PIN definido, begin() sem args. O envio usa IR_SEND_PIN; LEDC no 1º send().
   IrSender.begin();
 
   // Inicializa receptor IR com a nova API (sem LED feedback)
@@ -2286,7 +2269,10 @@ void setup() {
   Serial.println("════════════════════════════════════════\n");
 
   Serial.println("✓ Receptor IR ativo no GPIO 14");
-  Serial.println("✓ Emissor IR ativo no GPIO 4 (IrSender.begin)");
+  Serial.println("✓ Emissor IR ativo no GPIO " + String(IR_EMITTER_PIN) + " (IrSender.begin)");
+
+  testLED_Emissor();
+
   Serial.println();
 }
 
